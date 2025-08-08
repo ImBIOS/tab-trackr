@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { logger } from '../lib/logger';
 
 interface TabSession {
@@ -42,34 +42,85 @@ export function useTabTrackingData(): UseTabTrackingDataReturn {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const isLoadingRef = useRef(false);
+  const hasLoadedOnceRef = useRef(false);
+  const intervalRef = useRef<number | null>(null);
+
+  // Wrapper that times out a message call and logs a per-call warning without throwing
+  const callWithTimeout = useCallback(
+    async <T>(action: string, timeoutMs = 3000): Promise<T | null> => {
+      try {
+        const responsePromise = browser.runtime.sendMessage({ action }) as Promise<T>;
+        const timeoutPromise = new Promise<null>((resolve) => {
+          setTimeout(() => resolve(null), timeoutMs);
+        });
+        const result = (await Promise.race([responsePromise, timeoutPromise])) as T | null;
+        if (result === null) {
+          logger.warn(
+            `Popup data: failed to load ${action.toLowerCase().replace('get_', '').replace(/_/g, ' ')}`,
+            {
+              component: 'useTabTrackingData',
+              reason: `Timed out: ${action}`,
+            }
+          );
+          return null;
+        }
+        return result;
+      } catch (err) {
+        logger.warn(
+          `Popup data: failed to load ${action.toLowerCase().replace('get_', '').replace(/_/g, ' ')}`,
+          {
+            component: 'useTabTrackingData',
+            reason: err instanceof Error ? err.message : 'Unknown error',
+          }
+        );
+        return null;
+      }
+    },
+    []
+  );
+
   const loadData = useCallback(async () => {
+    if (isLoadingRef.current) {
+      // Prevent overlapping loads which caused duplicate timers and flicker
+      return;
+    }
+    isLoadingRef.current = true;
+
+    // Only time when not already timing this logical load
     logger.debug('Loading popup data', { component: 'useTabTrackingData' });
     logger.time('TabTrackingData Load');
 
     try {
-      setIsLoading(true);
+      setIsLoading(!hasLoadedOnceRef.current);
       setError(null);
 
       const [statsResponse, sessionResponse, trackingResponse, syncResponse] = await Promise.all([
-        browser.runtime.sendMessage({ action: 'GET_DAILY_STATS' }) as Promise<DailyStats | null>,
-        browser.runtime.sendMessage({
-          action: 'GET_CURRENT_SESSION',
-        }) as Promise<TabSession | null>,
-        browser.runtime.sendMessage({ action: 'GET_TRACKING_STATUS' }) as Promise<boolean>,
-        browser.runtime.sendMessage({ action: 'GET_SYNC_STATUS' }) as Promise<SyncStatus>,
+        callWithTimeout<DailyStats | null>('GET_DAILY_STATS'),
+        callWithTimeout<TabSession | null>('GET_CURRENT_SESSION'),
+        callWithTimeout<boolean>('GET_TRACKING_STATUS'),
+        callWithTimeout<SyncStatus>('GET_SYNC_STATUS'),
       ]);
 
-      setDailyStats(statsResponse);
-      setCurrentSession(sessionResponse);
-      setIsTrackingEnabled(trackingResponse);
-      setSyncStatus(syncResponse);
+      if (statsResponse !== null) {
+        setDailyStats(statsResponse);
+      }
+      if (sessionResponse !== null) {
+        setCurrentSession(sessionResponse);
+      }
+      if (typeof trackingResponse === 'boolean') {
+        setIsTrackingEnabled(trackingResponse);
+      }
+      if (syncResponse !== null) {
+        setSyncStatus(syncResponse);
+      }
 
       logger.timeEnd('TabTrackingData Load');
-      logger.info('Tab tracking data loaded successfully', {
+      logger.info('Tab tracking data loaded (partial ok)', {
         component: 'useTabTrackingData',
         hasStats: !!statsResponse,
         hasSession: !!sessionResponse,
-        trackingEnabled: trackingResponse,
+        trackingEnabled: (trackingResponse as unknown as boolean) ?? undefined,
       });
     } catch (err) {
       logger.timeEnd('TabTrackingData Load');
@@ -79,18 +130,31 @@ export function useTabTrackingData(): UseTabTrackingDataReturn {
       setError('Failed to load tracking data');
     } finally {
       setIsLoading(false);
+      isLoadingRef.current = false;
+      hasLoadedOnceRef.current = true;
     }
-  }, []);
+  }, [callWithTimeout]);
 
   useEffect(() => {
     loadData();
 
-    const interval = setInterval(() => {
+    // Clear existing interval if any (hot-reloads/StrictMode)
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    intervalRef.current = setInterval(() => {
       logger.trace('Auto-refreshing tab tracking data', { component: 'useTabTrackingData' });
       loadData();
-    }, 5000);
+    }, 5000) as unknown as number;
 
-    return () => clearInterval(interval);
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
   }, [loadData]);
 
   return {

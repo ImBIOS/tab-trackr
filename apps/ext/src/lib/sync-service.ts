@@ -18,6 +18,13 @@ class DataSyncService {
   async initialize() {
     logger.info('Initializing DataSyncService', { component: 'DataSyncService' });
 
+    if (!supabase) {
+      logger.info('Supabase client not available, skipping sync initialization', {
+        component: 'DataSyncService',
+      });
+      return;
+    }
+
     // Check if user is authenticated
     const {
       data: { session },
@@ -67,6 +74,14 @@ class DataSyncService {
   }
 
   async syncData(): Promise<boolean> {
+    if (!supabase) {
+      logger.debug('Supabase not configured; skipping syncData()', {
+        component: 'DataSyncService',
+      });
+      await this.updateSyncStatus({ isOnline: false });
+      return false;
+    }
+
     try {
       const {
         data: { user },
@@ -113,7 +128,7 @@ class DataSyncService {
   private async syncPendingSessions(userId: string) {
     const pendingSessions = await this.getPendingSessions();
 
-    if (pendingSessions.length === 0) {
+    if (pendingSessions.length === 0 || !supabase) {
       return;
     }
 
@@ -156,7 +171,7 @@ class DataSyncService {
     const stored = await browser.storage.local.get('daily_stats');
     const dailyStats = stored.daily_stats as DailyStats | undefined;
 
-    if (!dailyStats || dailyStats.totalTime === 0) {
+    if (!dailyStats || dailyStats.totalTime === 0 || !supabase) {
       return;
     }
 
@@ -287,6 +302,10 @@ class DataSyncService {
   }
 
   async authenticateWithGoogle(): Promise<boolean> {
+    if (!supabase) {
+      logger.warn('Supabase not configured; cannot authenticate', { component: 'DataSyncService' });
+      return false;
+    }
     try {
       logger.info('Starting Google authentication', { component: 'DataSyncService' });
 
@@ -328,8 +347,10 @@ class DataSyncService {
 
   async signOut(): Promise<void> {
     try {
-      // Sign out from Supabase
-      await supabase.auth.signOut();
+      if (supabase) {
+        // Sign out from Supabase
+        await supabase.auth.signOut();
+      }
 
       // Remove Chrome Identity token
       const cachedToken = await new Promise<string>((resolve) => {

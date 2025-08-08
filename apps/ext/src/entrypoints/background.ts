@@ -83,7 +83,7 @@ class TabTracker {
       await this.performDataCleanupIfNeeded();
       logger.initializationStep('performDataCleanupIfNeeded', true, { component: 'TabTracker' });
 
-      // Initialize sync service
+      // Initialize sync service (safe if not configured)
       await syncService.initialize();
       logger.initializationStep('syncService.initialize', true, { component: 'TabTracker' });
 
@@ -121,7 +121,7 @@ class TabTracker {
     } catch (error) {
       logger.timeEnd('TabTracker Initialization');
       logger.fatal('Failed to initialize TabTracker', error as Error, { component: 'TabTracker' });
-      throw error;
+      // Do not rethrow; keep background alive for message handling
     }
   }
 
@@ -764,7 +764,9 @@ class TabTracker {
 export default defineBackground(() => {
   const tracker = new TabTracker();
 
-  // Initialize tracker
+  logger.info('Background service worker boot', { component: 'Background' });
+
+  // Initialize tracker in a fire-and-forget fashion
   tracker.initialize();
 
   // Tab event listeners

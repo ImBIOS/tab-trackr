@@ -12,7 +12,10 @@ export default defineConfig({
       permissions: ['tabs', 'activeTab', 'storage', 'identity', 'alarms'],
       host_permissions: ['<all_urls>'],
       content_security_policy: {
-        extension_pages: "script-src 'self'; object-src 'self'",
+        extension_pages:
+          mode !== 'production'
+            ? "script-src 'self' 'wasm-unsafe-eval' 'inline-speculation-rules'; object-src 'self'"
+            : "script-src 'self'; object-src 'self'",
       },
     };
   },
